@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meu Snapdrop Clone</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            height: 100vh; 
+            background: #f0f2f5; 
+            margin: 0;
+        }
+        h1 { color: #333; margin-bottom: 30px; font-size: 24px; }
+        .dispositivo { 
+            padding: 30px; 
+            background: white; 
+            border-radius: 50%; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+            cursor: pointer; 
+            text-align: center; 
+            transition: transform 0.2s;
+            width: 100px;
+            height: 100px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .dispositivo:hover { transform: scale(1.05); }
+        .dispositivo-icone { font-size: 40px; }
+        .dispositivo-nome { font-size: 12px; color: #666; margin-top: 5px; }
+        #status { margin-top: 20px; color: #888; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+    <h1>Dispositivos na sua rede Wi-Fi</h1>
+    
+    <div id="lista-dispositivos">
+        <p style="color: #999;">Aguardando outros dispositivos entrarem...</p>
+    </div>
+    
+    <div id="status"></div>
+    
+    <input type="file" id="arquivo" style="display: none;">
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        // ATENÇÃO: Você vai mudar esse link no Passo 4 do guia pelo link do seu Render!
+        const socket = io('https://seu-servidor-de-sinalizacao.onrender.com'); 
+        
+        let peerConnection;
+        let dataChannel;
+        let idDestino;
+
+        // Quando um novo dispositivo entra na mesma rede
+        socket.on('usuario-conectado', (idId) => {
+            idDestino = idId;
+            const lista = document.getElementById('lista-dispositivos');
+            lista.innerHTML = `
+                <div class="dispositivo" onclick="abrirSeletorArquivo()">
+                    <span class="dispositivo-icone">📱</span>
+                    <span class="dispositivo-nome">Dispositivo</span>
+                </div>
+            `;
+            document.getElementById('status').innerText = "Conectado ao sinalizador. Clique no ícone para enviar.";
+        });
+
+        // Quando o outro dispositivo vai embora
+        socket.on('usuario-desconectado', (id) => {
+            const lista = document.getElementById('lista-dispositivos');
+            lista.innerHTML = `<p style="color: #999;">O outro dispositivo saiu.</p>`;
+            document.getElementById('status').innerText = "";
+        });
+
+        function abrirSeletorArquivo() {
+            if (!peerConnection) {
+                iniciarConexao(idDestino);
+            }
+            document.getElementById('arquivo').click();
+        }
+
+        // Configuração do WebRTC (Ponto a Ponto)
+        function iniciarConexao(id) {
+            peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            dataChannel = peerConnection.createDataChannel("transferencia");
+            
+            configurarCanal(dataChannel);
+
+            peerConnection.onicecandidate = e => {
+                if (e.candidate) socket.emit('sinal', { para: id, sinal: e.candidate });
+            };
+
+            peerConnection.createOffer().then(o => {
+                peerConnection.setLocalDescription(o);
+                socket.emit('sinal', { para: id, sinal: o });
+            });
+        }
+
+        function configurarCanal(canal) {
+            canal.onopen = () => {
+                document.getElementById('status').innerText = "Canal direto criado! Enviando...";
+                
+                document.getElementById('arquivo').onchange = (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    document.getElementById('status').innerText = `Enviando: ${file.name}...`;
+                    
+                    file.arrayBuffer().then(buffer => {
+                        canal.send(buffer);
+                        document.getElementById('status').innerText = "Arquivo enviado com sucesso!";
+                    });
+                };
+            };
+
+            canal.onmessage = (e) => {
+                document.getElementById('status').innerText = "Recebendo arquivo...";
+                const blob = new Blob([e.data]);
+                const url = URL.createObjectURL(blob);
+                
+                // Cria um link invisível para baixar o arquivo automaticamente
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = "arquivo_recebido";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                
+                document.getElementById('status').innerText = "Arquivo recebido e baixado!";
+            };
+        }
+
+        // Recebe os sinais de conexão (WebRTC handshake)
+        socket.on('sinal', async (dados) => {
+            if (!peerConnection) {
+                peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+                peerConnection.onicecandidate = e => {
+                    if (e.candidate) socket.emit('sinal', { para: dados.de, sinal: e.candidate });
+                };
+                peerConnection.ondatachannel = e => configurarCanal(e.channel);
+            }
+
+            if (dados.sinal.type === 'offer') {
+                await peerConnection.setRemoteDescription(dados.sinal);
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.emit('sinal', { para: dados.de, sinal: answer });
+            } else if (dados.sinal.candidate) {
+                await peerConnection.addIceCandidate(dados.sinal);
+            }
+        });
+    </script>
+</body>
+</html>
